@@ -1,3 +1,95 @@
+   # enhanced_streamlit_app.py - Streamlit app with TastyTrade and OpenRouter integration
+import streamlit as st
+import pandas as pd
+import numpy as np
+import plotly.graph_objects as go
+import plotly.express as px
+from plotly.subplots import make_subplots
+import asyncio
+import json
+import logging
+from datetime import datetime, timedelta
+from typing import Dict, List, Optional
+import os
+import requests
+
+# Import our enhanced modules
+try:
+    from advanced_analytics import (
+        AdvancedOptionsAnalyzer, AdvancedAnalysisResult, 
+        format_advanced_results, get_historical_data
+    )
+    from langgraph_integration import run_langgraph_analysis, LANGGRAPH_AVAILABLE
+    ADVANCED_FEATURES_AVAILABLE = True
+except ImportError as e:
+    st.error(f"Advanced features not available: {e}")
+    ADVANCED_FEATURES_AVAILABLE = False
+
+# Import TastyTrade client
+try:
+    from tastytrade_client import TastyTradeClient
+    TASTYTRADE_AVAILABLE = True
+except ImportError:
+    TASTYTRADE_AVAILABLE = False
+    st.warning("TastyTrade client not available. Create tastytrade_client.py file.")
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Page configuration
+st.set_page_config(
+    page_title="TastyTrade Advanced Options Validator",
+    page_icon="🚀",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# Enhanced CSS
+st.markdown("""
+<style>
+    .main-header {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        padding: 2rem;
+        border-radius: 15px;
+        margin-bottom: 2rem;
+        color: white;
+        text-align: center;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+    }
+    .metric-card {
+        background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+        padding: 1.5rem;
+        border-radius: 10px;
+        margin: 0.5rem 0;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+    }
+    .advanced-metric {
+        background: linear-gradient(135deg, #a8edea 0%, #fed6e3 100%);
+        padding: 1rem;
+        border-radius: 8px;
+        margin: 0.3rem 0;
+        border-left: 4px solid #667eea;
+    }
+    .kelly-score {
+        font-size: 1.8rem;
+        font-weight: bold;
+        color: #667eea;
+    }
+    .risk-high { color: #e74c3c; font-weight: bold; }
+    .risk-medium { color: #f39c12; font-weight: bold; }
+    .risk-low { color: #27ae60; font-weight: bold; }
+    .z-score-positive { color: #27ae60; }
+    .z-score-negative { color: #e74c3c; }
+    .confidence-indicator {
+        display: inline-block;
+        padding: 0.2rem 0.8rem;
+        border-radius: 20px;
+        font-weight: bold;
+        color: white;
+    }
+    .conf-high { background-color: #27ae60; }
+    .conf-medium { background-color: #f39c12; }
     .conf-low { background-color: #e74c3c; }
     .langgraph-section {
         background: linear-gradient(135deg, #ffecd2 0%, #fcb69f 100%);
@@ -15,8 +107,134 @@
 </style>
 """, unsafe_allow_html=True)
 
+def get_api_credentials():
+    """Get API credentials from various sources (secrets, env vars, or user input)"""
+    credentials = {
+        'tastytrade': {},
+        'openrouter': {},
+        'anthropic': {}
+    }
+    
+    # Try Streamlit secrets first
+    try:
+        credentials['tastytrade'] = {
+            'username': st.secrets.get("tastytrade", {}).get("username"),
+            'password': st.secrets.get("tastytrade", {}).get("password")
+        }
+        credentials['openrouter']['api_key'] = st.secrets.get("openrouter", {}).get("api_key")
+        credentials['anthropic']['api_key'] = st.secrets.get("anthropic", {}).get("api_key")
+    except:
+        pass
+    
+    # Fallback to environment variables
+    credentials['tastytrade']['username'] = credentials['tastytrade']['username'] or os.getenv("TASTYTRADE_USERNAME")
+    credentials['tastytrade']['password'] = credentials['tastytrade']['password'] or os.getenv("TASTYTRADE_PASSWORD")
+    credentials['openrouter']['api_key'] = credentials['openrouter']['api_key'] or os.getenv("OPENROUTER_API_KEY")
+    credentials['anthropic']['api_key'] = credentials['anthropic']['api_key'] or os.getenv("ANTHROPIC_API_KEY")
+    
+    return credentials
+
+def initialize_apis(credentials):
+    """Initialize API clients with credentials"""
+    apis = {}
+    
+    # Initialize TastyTrade API
+    if TASTYTRADE_AVAILABLE:
+        try:
+            tt_username = credentials['tastytrade']['username'] or st.session_state.get('tastytrade_username')
+            tt_password = credentials['tastytrade']['password'] or st.session_state.get('tastytrade_password')
+            
+            if tt_username and tt_password:
+                tastytrade_client = TastyTradeClient()
+                if tastytrade_client.authenticate(tt_username, tt_password):
+                    apis['tastytrade'] = tastytrade_client
+                    logger.info("TastyTrade API initialized successfully")
+                else:
+                    st.sidebar.error("❌ TastyTrade authentication failed")
+            else:
+                logger.warning("TastyTrade credentials not available")
+        except Exception as e:
+            st.sidebar.error(f"TastyTrade API initialization failed: {e}")
+            logger.error(f"TastyTrade API error: {e}")
+    
+    # Initialize OpenRouter API (simple implementation)
+    try:
+        openrouter_key = credentials['openrouter']['api_key'] or st.session_state.get('openrouter_api_key')
+        if openrouter_key:
+            apis['openrouter'] = {'api_key': openrouter_key}
+            logger.info("OpenRouter API key available")
+    except Exception as e:
+        logger.error(f"OpenRouter API error: {e}")
+    
+    return apis
+
+def setup_api_sidebar():
+    """Setup API configuration in sidebar"""
+    st.sidebar.header("🔐 API Configuration")
+    
+    credentials = get_api_credentials()
+    
+    # Check if credentials are available
+    tastytrade_configured = all([
+        credentials['tastytrade']['username'],
+        credentials['tastytrade']['password']
+    ])
+    
+    openrouter_configured = bool(credentials['openrouter']['api_key'])
+    
+    # Status indicators
+    st.sidebar.subheader("📊 API Status")
+    
+    if 'apis' in st.session_state and st.session_state.apis.get('tastytrade'):
+        st.sidebar.success("✅ TastyTrade: Connected")
+    elif tastytrade_configured:
+        st.sidebar.warning("🔄 TastyTrade: Configured, not connected")
+    else:
+        st.sidebar.error("❌ TastyTrade: Not configured")
+    
+    if openrouter_configured:
+        st.sidebar.success("✅ OpenRouter: Configured")
+    else:
+        st.sidebar.error("❌ OpenRouter: Not configured")
+    
+    # Manual credential input if not configured
+    if not tastytrade_configured and TASTYTRADE_AVAILABLE:
+        st.sidebar.subheader("🔧 TastyTrade Login")
+        
+        with st.sidebar.form("tastytrade_login"):
+            st.warning("⚠️ Only enter credentials if you trust this environment")
+            
+            tt_username = st.text_input("TastyTrade Username", 
+                                      value=credentials['tastytrade']['username'] or "")
+            tt_password = st.text_input("TastyTrade Password", 
+                                      type="password")
+            
+            login_submitted = st.form_submit_button("🔐 Login to TastyTrade")
+            
+            if login_submitted and tt_username and tt_password:
+                with st.spinner("Authenticating with TastyTrade..."):
+                    tastytrade_client = TastyTradeClient()
+                    if tastytrade_client.authenticate(tt_username, tt_password):
+                        st.session_state.apis = st.session_state.get('apis', {})
+                        st.session_state.apis['tastytrade'] = tastytrade_client
+                        st.success("✅ TastyTrade login successful!")
+                        st.rerun()
+                    else:
+                        st.error("❌ TastyTrade login failed")
+    
+    if not openrouter_configured:
+        st.sidebar.subheader("🤖 OpenRouter API")
+        or_api_key = st.sidebar.text_input("OpenRouter API Key", 
+                                         type="password",
+                                         key="or_api_key")
+        
+        if or_api_key:
+            st.session_state.openrouter_api_key = or_api_key
+    
+    return credentials
+
 def initialize_session_state():
-    """Initialize session state with advanced features"""
+    """Initialize session state with advanced features and API credentials"""
     if 'authenticated' not in st.session_state:
         st.session_state.authenticated = False
     if 'advanced_analyzer' not in st.session_state and ADVANCED_FEATURES_AVAILABLE:
@@ -25,6 +243,12 @@ def initialize_session_state():
         st.session_state.analysis_results = None
     if 'langgraph_results' not in st.session_state:
         st.session_state.langgraph_results = None
+    
+    # Initialize API credentials
+    if 'credentials' not in st.session_state:
+        st.session_state.credentials = get_api_credentials()
+    if 'apis' not in st.session_state:
+        st.session_state.apis = {}
 
 def show_advanced_metrics(advanced_results: AdvancedAnalysisResult):
     """Display advanced analytics metrics"""
@@ -254,7 +478,7 @@ def show_langgraph_results(langgraph_results: Dict):
     st.markdown('</div>', unsafe_allow_html=True)
 
 def show_advanced_validation_tab():
-    """Enhanced validation tab with all advanced features"""
+    """Enhanced validation tab with live TastyTrade data and all advanced features"""
     
     st.header("🚀 Advanced Options Validator")
     
@@ -266,10 +490,54 @@ def show_advanced_validation_tab():
             st.subheader("📋 Basic Configuration")
             symbol = st.text_input("Symbol", value="SPY")
             spread_type = st.selectbox("Spread Type", ["PUT", "CALL"])
-            current_price = st.number_input("Current Price", min_value=0.0, value=450.0, step=0.01)
+            
+            # Live price from TastyTrade
+            current_price = 450.0  # Default
+            if st.session_state.get('apis', {}).get('tastytrade'):
+                col_price, col_button = st.columns([2, 1])
+                with col_button:
+                    if st.form_submit_button("📡 Get Live Price", type="secondary"):
+                        try:
+                            api = st.session_state.apis['tastytrade']
+                            live_price = api.get_current_price(symbol)
+                            if live_price:
+                                current_price = live_price
+                                st.success(f"${live_price:.2f}")
+                            else:
+                                st.error("Price not found")
+                        except Exception as e:
+                            st.error(f"Error: {e}")
+                
+                with col_price:
+                    current_price = st.number_input("Current Price", 
+                                                  min_value=0.0, 
+                                                  value=current_price, 
+                                                  step=0.01)
+            else:
+                current_price = st.number_input("Current Price", 
+                                              min_value=0.0, 
+                                              value=450.0, 
+                                              step=0.01)
+                if TASTYTRADE_AVAILABLE:
+                    st.info("💡 Connect TastyTrade for live prices")
             
         with col2:
             st.subheader("🎯 Strike Configuration")
+            
+            # Options chain from TastyTrade
+            if st.session_state.get('apis', {}).get('tastytrade'):
+                if st.form_submit_button("📊 Load Options Chain", type="secondary"):
+                    try:
+                        api = st.session_state.apis['tastytrade']
+                        options_chain = api.get_options_chain(symbol)
+                        if options_chain:
+                            st.session_state.options_chain = options_chain
+                            st.success("Options chain loaded")
+                        else:
+                            st.error("Failed to load options chain")
+                    except Exception as e:
+                        st.error(f"Error: {e}")
+            
             short_strike = st.number_input("Short Strike", min_value=0.0, value=440.0, step=0.5)
             long_strike = st.number_input("Long Strike", min_value=0.0, value=435.0, step=0.5)
             credit = st.number_input("Credit", min_value=0.0, value=1.25, step=0.01)
@@ -288,8 +556,14 @@ def show_advanced_validation_tab():
                 enable_monte_carlo = st.checkbox("Enable Monte Carlo Analysis", value=True)
                 num_simulations = st.number_input("Monte Carlo Simulations", 
                                                 min_value=1000, max_value=50000, value=10000, step=1000)
+                use_live_data = st.checkbox("Use Live Market Data", 
+                                          value=bool(st.session_state.get('apis', {}).get('tastytrade')),
+                                          disabled=not bool(st.session_state.get('apis', {}).get('tastytrade')))
                 
             with col2:
+                enable_ai_analysis = st.checkbox("Enable AI Analysis", 
+                                                value=bool(st.session_state.get('apis', {}).get('openrouter')),
+                                                disabled=not bool(st.session_state.get('apis', {}).get('openrouter')))
                 enable_langgraph = st.checkbox("Enable LangGraph AI Workflow", 
                                               value=LANGGRAPH_AVAILABLE,
                                               disabled=not LANGGRAPH_AVAILABLE)
@@ -298,6 +572,11 @@ def show_advanced_validation_tab():
         
         # Submit button
         submitted = st.form_submit_button("🔍 Run Advanced Analysis", type="primary")
+    
+    # Display current options chain if available
+    if st.session_state.get('options_chain'):
+        with st.expander("📊 Current Options Chain"):
+            st.json(st.session_state.options_chain)
     
     # Quick metrics display
     if submitted or st.session_state.analysis_results:
@@ -328,43 +607,15 @@ def show_advanced_validation_tab():
             'days_to_exp': days_to_exp,
             'implied_volatility': implied_vol,
             'risk_free_rate': risk_free_rate,
-            'account_balance': account_balance
+            'account_balance': account_balance,
+            'use_live_data': use_live_data,
+            'enable_ai_analysis': enable_ai_analysis
         }
         
         with st.spinner("🧮 Running advanced analytics... This may take a moment."):
             try:
-                # Run advanced analytics
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                
-                # Get historical data (mock for demo)
-                historical_data = loop.run_until_complete(
-                    get_historical_data(symbol, None)
-                )
-                
-                # Run comprehensive analysis
-                advanced_results = loop.run_until_complete(
-                    st.session_state.advanced_analyzer.comprehensive_analysis(
-                        spread_data, historical_data
-                    )
-                )
-                
-                st.session_state.analysis_results = advanced_results
-                
-                # Run LangGraph analysis if enabled
-                if enable_langgraph and LANGGRAPH_AVAILABLE:
-                    anthropic_key = os.getenv("ANTHROPIC_API_KEY") or st.secrets.get("ANTHROPIC_API_KEY")
-                    if anthropic_key:
-                        with st.spinner("🧠 Running LangGraph AI workflow..."):
-                            market_context = {'vix': 18.5, 'volume_ratio': 1.2, 'trend': 'Neutral'}
-                            langgraph_results = loop.run_until_complete(
-                                run_langgraph_analysis(spread_data, anthropic_key, market_context)
-                            )
-                            st.session_state.langgraph_results = langgraph_results
-                    else:
-                        st.warning("Anthropic API key required for LangGraph analysis")
-                
-                loop.close()
+                # Run enhanced analysis with API integration
+                run_enhanced_analysis(spread_data)
                 
             except Exception as e:
                 st.error(f"❌ Analysis failed: {e}")
@@ -421,84 +672,162 @@ def show_advanced_validation_tab():
     if st.session_state.langgraph_results:
         show_langgraph_results(st.session_state.langgraph_results)
 
-def main():
-    """Enhanced main application"""
+def run_enhanced_analysis(spread_data):
+    """Run enhanced analysis with API integration"""
     
-    initialize_session_state()
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     
-    # Header
-    st.markdown('''
-    <div class="main-header">
-        <h1>🚀 TastyTrade Advanced Options Validator</h1>
-        <p>Complete options analysis with Kelly Criterion, Z-Score, Monte Carlo, Black-Scholes, and AI workflows</p>
-    </div>
-    ''', unsafe_allow_html=True)
-    
-    # Feature availability check
-    if not ADVANCED_FEATURES_AVAILABLE:
-        st.error("⚠️ Advanced features not available. Please ensure all required modules are installed.")
-        st.stop()
-    
-    # Sidebar
-    with st.sidebar:
-        st.header("🔧 Advanced Configuration")
+    try:
+        # Get historical data
+        if spread_data.get('use_live_data') and st.session_state.get('apis', {}).get('tastytrade'):
+            # Use live TastyTrade data
+            # Note: You might need to implement get_historical_data method in TastyTradeClient
+            historical_data = None  # Placeholder
+        else:
+            # Use mock or alternative data source
+            historical_data = loop.run_until_complete(
+                get_historical_data(spread_data['symbol'], None)
+            )
         
-        # Feature toggles
-        st.subheader("🎛️ Analysis Features")
+        # Run comprehensive analysis
+        advanced_results = loop.run_until_complete(
+            st.session_state.advanced_analyzer.comprehensive_analysis(
+                spread_data, historical_data
+            )
+        )
         
-        features = {
-            "Kelly Criterion": st.checkbox("Kelly Criterion Position Sizing", value=True),
-            "Monte Carlo": st.checkbox("Monte Carlo Simulation", value=True),
-            "Black-Scholes": st.checkbox("Black-Scholes with Z-Score", value=True),
-            "LangGraph": st.checkbox("LangGraph AI Workflow", value=LANGGRAPH_AVAILABLE, 
-                                   disabled=not LANGGRAPH_AVAILABLE)
+        st.session_state.analysis_results = advanced_results
+        
+        # AI Analysis with OpenRouter
+        if spread_data.get('enable_ai_analysis') and st.session_state.get('apis', {}).get('openrouter'):
+            with st.spinner("🤖 Running AI analysis..."):
+                # Simple OpenRouter API call
+                ai_analysis = call_openrouter_api(spread_data, st.session_state.apis['openrouter']['api_key'])
+                st.session_state.ai_analysis = ai_analysis
+        
+        # LangGraph analysis
+        if spread_data.get('enable_langgraph', False) and LANGGRAPH_AVAILABLE:
+            anthropic_key = st.session_state.credentials['anthropic']['api_key']
+            if anthropic_key:
+                with st.spinner("🧠 Running LangGraph AI workflow..."):
+                    market_context = {'vix': 18.5, 'volume_ratio': 1.2, 'trend': 'Neutral'}
+                    langgraph_results = loop.run_until_complete(
+                        run_langgraph_analysis(spread_data, anthropic_key, market_context)
+                    )
+                    st.session_state.langgraph_results = langgraph_results
+            else:
+                st.warning("Anthropic API key required for LangGraph analysis")
+    
+    finally:
+        loop.close()
+
+def call_openrouter_api(spread_data, api_key):
+    """Simple OpenRouter API call for options analysis"""
+    try:
+        url = "https://openrouter.ai/api/v1/chat/completions"
+        
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
         }
         
-        # Analysis parameters
-        st.subheader("📊 Analysis Parameters")
-        monte_carlo_sims = st.slider("Monte Carlo Simulations", 1000, 50000, 10000, step=1000)
-        confidence_level = st.slider("Confidence Level", 0.90, 0.99, 0.95, step=0.01)
+        prompt = f"""
+        Analyze this options spread:
+        Symbol: {spread_data['symbol']}
+        Type: {spread_data['spread_type']} spread
+        Current Price: ${spread_data['current_price']}
+        Short Strike: ${spread_data['short_strike']}
+        Long Strike: ${spread_data['long_strike']}
+        Credit: ${spread_data['credit']}
+        Days to Expiration: {spread_data['days_to_exp']}
         
-        # Model parameters
-        st.subheader("🎯 Model Parameters")
-        volatility_model = st.selectbox("Volatility Model", 
-                                       ["Historical", "Implied", "GARCH", "Stochastic"])
-        price_model = st.selectbox("Price Model", 
-                                  ["Black-Scholes", "Heston", "Jump Diffusion"])
+        Provide a brief analysis of the risk/reward and probability of success.
+        """
         
-        # Display feature status
-        st.subheader("📊 Feature Status")
+        data = {
+            "model": "anthropic/claude-3-haiku",
+            "messages": [
+                {"role": "user", "content": prompt}
+            ]
+        }
         
-        status_items = [
-            ("Kelly Criterion", "✅ Available"),
-            ("Z-Score Analysis", "✅ Available"), 
-            ("Monte Carlo", "✅ Available"),
-            ("Black-Scholes", "✅ Available"),
-            ("LangGraph", "✅ Available" if LANGGRAPH_AVAILABLE else "❌ Not Available")
-        ]
+        response = requests.post(url, headers=headers, json=data)
         
-        for feature, status in status_items:
-            st.text(f"{feature}: {status}")
+        if response.status_code == 200:
+            return response.json()['choices'][0]['message']['content']
+        else:
+            return f"API Error: {response.status_code}"
+            
+    except Exception as e:
+        return f"Error calling OpenRouter API: {e}"
+
+def show_api_management_tab():
+    """API management and testing tab"""
+    st.header("⚙️ API Management")
     
-    # Main tabs
-    tab1, tab2, tab3, tab4 = st.tabs([
-        "🚀 Advanced Analysis", 
-        "📊 Model Comparison", 
-        "📈 Performance Analytics", 
-        "🔬 Research Tools"
-    ])
+    col1, col2 = st.columns(2)
     
-    with tab1:
-        show_advanced_validation_tab()
+    with col1:
+        st.subheader("🔌 TastyTrade API")
+        
+        if st.session_state.get('apis', {}).get('tastytrade'):
+            st.success("✅ TastyTrade API Connected")
+            
+            if st.button("Test TastyTrade Connection"):
+                with st.spinner("Testing TastyTrade connection..."):
+                    try:
+                        api = st.session_state.apis['tastytrade']
+                        if api.is_authenticated():
+                            st.success("✅ TastyTrade connection successful!")
+                        else:
+                            st.error("❌ TastyTrade connection failed")
+                    except Exception as e:
+                        st.error(f"❌ Connection error: {e}")
+            
+            # Show sample data
+            if st.button("Fetch Sample Data"):
+                with st.spinner("Fetching data from TastyTrade..."):
+                    try:
+                        api = st.session_state.apis['tastytrade']
+                        sample_price = api.get_current_price("SPY")
+                        
+                        if sample_price:
+                            st.json({"SPY_price": sample_price})
+                        else:
+                            st.warning("No data returned")
+                    except Exception as e:
+                        st.error(f"Error fetching data: {e}")
+        else:
+            st.warning("❌ TastyTrade API not configured")
+            st.info("Please configure TastyTrade credentials in the sidebar")
     
-    with tab2:
-        show_model_comparison_tab()
-    
-    with tab3:
-        show_performance_analytics_tab()
-    
-    with tab4:
-        show_research_tools_tab()
+    with col2:
+        st.subheader("🤖 OpenRouter AI API")
+        
+        if st.session_state.get('apis', {}).get('openrouter'):
+            st.success("✅ OpenRouter API Connected")
+            
+            if st.button("Test OpenRouter Connection"):
+                with st.spinner("Testing OpenRouter connection..."):
+                    try:
+                        test_response = call_openrouter_api({
+                            'symbol': 'SPY',
+                            'spread_type': 'PUT',
+                            'current_price': 450,
+                            'short_strike': 440,
+                            'long_strike': 435,
+                            'credit': 1.25,
+                            'days_to_exp': 21
+                        }, st.session_state.apis['openrouter']['api_key'])
+                        
+                        st.write("**AI Response:**")
+                        st.write(test_response)
+                    except Exception as e:
+                        st.error(f"Error in AI analysis: {e}")
+        else:
+            st.warning("❌ OpenRouter API not configured")
+            st.info("Please configure OpenRouter API key in the sidebar")
 
 def show_model_comparison_tab():
     """Compare different analysis models"""
@@ -641,209 +970,130 @@ def show_research_tools_tab():
     
     with col2:
         if st.button("Calculate Option Prices"):
-            from advanced_analytics import BlackScholesAnalyzer
-            
-            bs = BlackScholesAnalyzer()
-            
-            call_price = bs.calculate_option_price(S, K, T, r, sigma, 'call')
-            put_price = bs.calculate_option_price(S, K, T, r, sigma, 'put')
-            
-            greeks_call = bs.calculate_greeks(S, K, T, r, sigma, 'call')
-            greeks_put = bs.calculate_greeks(S, K, T, r, sigma, 'put')
-            
-            st.write("**Call Option**")
-            st.write(f"Price: ${call_price:.2f}")
-            st.write(f"Delta: {greeks_call['delta']:.3f}")
-            st.write(f"Gamma: {greeks_call['gamma']:.3f}")
-            st.write(f"Theta: ${greeks_call['theta']:.2f}")
-            
-            st.write("**Put Option**")
-            st.write(f"Price: ${put_price:.2f}")
-            st.write(f"Delta: {greeks_put['delta']:.3f}")
-            st.write(f"Gamma: {greeks_put['gamma']:.3f}")
-            st.write(f"Theta: ${greeks_put['theta']:.2f}")
+            try:
+                from advanced_analytics import BlackScholesAnalyzer
+                
+                bs = BlackScholesAnalyzer()
+                
+                call_price = bs.calculate_option_price(S, K, T, r, sigma, 'call')
+                put_price = bs.calculate_option_price(S, K, T, r, sigma, 'put')
+                
+                greeks_call = bs.calculate_greeks(S, K, T, r, sigma, 'call')
+                greeks_put = bs.calculate_greeks(S, K, T, r, sigma, 'put')
+                
+                st.write("**Call Option**")
+                st.write(f"Price: ${call_price:.2f}")
+                st.write(f"Delta: {greeks_call['delta']:.3f}")
+                st.write(f"Gamma: {greeks_call['gamma']:.3f}")
+                st.write(f"Theta: ${greeks_call['theta']:.2f}")
+                
+                st.write("**Put Option**")
+                st.write(f"Price: ${put_price:.2f}")
+                st.write(f"Delta: {greeks_put['delta']:.3f}")
+                st.write(f"Gamma: {greeks_put['gamma']:.3f}")
+                st.write(f"Theta: ${greeks_put['theta']:.2f}")
+            except Exception as e:
+                st.error(f"Error calculating prices: {e}")
+
+def main():
+    """Enhanced main application with TastyTrade and OpenRouter integration"""
     
-    # Volatility surface
-    st.subheader("📊 Volatility Surface")
+    initialize_session_state()
     
-    if st.button("Generate Volatility Surface"):
-        # Generate mock volatility surface
-        strikes = np.arange(80, 121, 5)
-        expirations = np.arange(0.1, 1.1, 0.1)
-        
-        X, Y = np.meshgrid(strikes, expirations)
-        
-        # Mock volatility surface (smile effect)
-        Z = 0.20 + 0.05 * np.exp(-((X - 100)**2) / 200) + 0.02 * Y
-        
-        fig = go.Figure(data=[go.Surface(z=Z, x=X, y=Y, colorscale='Viridis')])
-        
-        fig.update_layout(
-            title='Implied Volatility Surface',
-            scene=dict(
-                xaxis_title='Strike Price',
-                yaxis_title='Time to Expiration',
-                zaxis_title='Implied Volatility'
-            ),
-            height=600
-        )
-        
-        st.plotly_chart(fig, use_container_width=True)
+    # Header
+    st.markdown('''
+    <div class="main-header">
+        <h1>🚀 TastyTrade Advanced Options Validator</h1>
+        <p>Complete options analysis with live TastyTrade data, Kelly Criterion, Z-Score, Monte Carlo, Black-Scholes, and AI workflows</p>
+    </div>
+    ''', unsafe_allow_html=True)
     
-    # Scenario analysis
-    st.subheader("🎭 Scenario Analysis")
+    # Feature availability check
+    if not ADVANCED_FEATURES_AVAILABLE:
+        st.error("⚠️ Advanced features not available. Please ensure all required modules are installed.")
+        st.stop()
     
-    col1, col2, col3 = st.columns(3)
+    # Setup API configuration in sidebar
+    credentials = setup_api_sidebar()
     
-    with col1:
-        scenario_type = st.selectbox("Scenario Type", 
-                                   ["Price Movement", "Volatility Change", "Time Decay"])
+    # Initialize APIs if not already done
+    if 'apis' not in st.session_state or not st.session_state.apis:
+        st.session_state.apis = initialize_apis(credentials)
     
-    with col2:
-        if scenario_type == "Price Movement":
-            scenario_range = st.slider("Price Change Range (%)", -50, 50, (-20, 20))
-        elif scenario_type == "Volatility Change":
-            scenario_range = st.slider("Vol Change Range (%)", -50, 50, (-30, 30))
-        else:
-            scenario_range = st.slider("Days Forward", 1, 30, (1, 15))
+    # Sidebar configuration
+    with st.sidebar:
+        st.header("🔧 Advanced Configuration")
+        
+        # Feature toggles
+        st.subheader("🎛️ Analysis Features")
+        
+        features = {
+            "Kelly Criterion": st.checkbox("Kelly Criterion Position Sizing", value=True),
+            "Monte Carlo": st.checkbox("Monte Carlo Simulation", value=True),
+            "Black-Scholes": st.checkbox("Black-Scholes with Z-Score", value=True),
+            "TastyTrade Data": st.checkbox("Live TastyTrade Data", 
+                                         value=bool(st.session_state.get('apis', {}).get('tastytrade')),
+                                         disabled=not bool(st.session_state.get('apis', {}).get('tastytrade'))),
+            "OpenRouter AI": st.checkbox("OpenRouter AI Analysis", 
+                                        value=bool(st.session_state.get('apis', {}).get('openrouter')),
+                                        disabled=not bool(st.session_state.get('apis', {}).get('openrouter'))),
+            "LangGraph": st.checkbox("LangGraph AI Workflow", value=LANGGRAPH_AVAILABLE, 
+                                   disabled=not LANGGRAPH_AVAILABLE)
+        }
+        
+        # Store features in session state
+        st.session_state.enabled_features = features
+        
+        # Analysis parameters
+        st.subheader("📊 Analysis Parameters")
+        monte_carlo_sims = st.slider("Monte Carlo Simulations", 1000, 50000, 10000, step=1000)
+        confidence_level = st.slider("Confidence Level", 0.90, 0.99, 0.95, step=0.01)
+        
+        # Model parameters
+        st.subheader("🎯 Model Parameters")
+        volatility_model = st.selectbox("Volatility Model", 
+                                       ["Historical", "Implied", "GARCH", "Stochastic"])
+        price_model = st.selectbox("Price Model", 
+                                  ["Black-Scholes", "Heston", "Jump Diffusion"])
+        
+        # Display feature status
+        st.subheader("📊 Feature Status")
+        
+        status_items = [
+            ("Kelly Criterion", "✅ Available"),
+            ("Z-Score Analysis", "✅ Available"), 
+            ("Monte Carlo", "✅ Available"),
+            ("Black-Scholes", "✅ Available"),
+            ("TastyTrade", "✅ Available" if TASTYTRADE_AVAILABLE else "❌ Not Available"),
+            ("LangGraph", "✅ Available" if LANGGRAPH_AVAILABLE else "❌ Not Available")
+        ]
+        
+        for feature, status in status_items:
+            st.text(f"{feature}: {status}")
     
-    with col3:
-        num_scenarios = st.slider("Number of Scenarios", 10, 100, 50)
+    # Main tabs
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+        "🚀 Advanced Analysis", 
+        "📊 Model Comparison", 
+        "📈 Performance Analytics", 
+        "🔬 Research Tools",
+        "⚙️ API Management"
+    ])
     
-    if st.button("Run Scenario Analysis") and st.session_state.analysis_results:
-        # Generate scenario results (mock)
-        scenarios = []
-        
-        for i in range(num_scenarios):
-            if scenario_type == "Price Movement":
-                change = np.random.uniform(scenario_range[0]/100, scenario_range[1]/100)
-                scenario_name = f"Price {change:+.1%}"
-                pnl = np.random.normal(0, abs(change) * 100)  # Mock P&L
-            elif scenario_type == "Volatility Change":
-                change = np.random.uniform(scenario_range[0]/100, scenario_range[1]/100)
-                scenario_name = f"Vol {change:+.1%}"
-                pnl = np.random.normal(change * 50, 20)  # Mock P&L
-            else:
-                days = np.random.randint(scenario_range[0], scenario_range[1])
-                scenario_name = f"Day {days}"
-                pnl = np.random.normal(-days * 0.1, 5)  # Time decay effect
-            
-            scenarios.append({
-                'Scenario': scenario_name,
-                'P&L': pnl,
-                'Probability': np.random.uniform(0.05, 0.15)
-            })
-        
-        scenario_df = pd.DataFrame(scenarios)
-        
-        # Plot scenario results
-        fig = px.scatter(scenario_df, x='Scenario', y='P&L', size='Probability',
-                        title=f"{scenario_type} Scenario Analysis",
-                        color='P&L', color_continuous_scale='RdYlGn')
-        
-        fig.add_hline(y=0, line_dash="dash", line_color="black")
-        fig.update_layout(xaxis_tickangle=45)
-        
-        st.plotly_chart(fig, use_container_width=True)
-        
-        # Summary statistics
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            st.metric("Expected P&L", f"${scenario_df['P&L'].mean():.2f}")
-        
-        with col2:
-            profitable_scenarios = (scenario_df['P&L'] > 0).mean()
-            st.metric("Profitable Scenarios", f"{profitable_scenarios:.1%}")
-        
-        with col3:
-            worst_case = scenario_df['P&L'].min()
-            st.metric("Worst Case", f"${worst_case:.2f}")
+    with tab1:
+        show_advanced_validation_tab()
+    
+    with tab2:
+        show_model_comparison_tab()
+    
+    with tab3:
+        show_performance_analytics_tab()
+    
+    with tab4:
+        show_research_tools_tab()
+    
+    with tab5:
+        show_api_management_tab()
 
 if __name__ == "__main__":
-    main()# enhanced_app.py - Streamlit app with advanced analytics integration
-import streamlit as st
-import pandas as pd
-import numpy as np
-import plotly.graph_objects as go
-import plotly.express as px
-from plotly.subplots import make_subplots
-import asyncio
-import json
-import logging
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional
-import os
-
-# Import our enhanced modules
-try:
-    from advanced_analytics import (
-        AdvancedOptionsAnalyzer, AdvancedAnalysisResult, 
-        format_advanced_results, get_historical_data
-    )
-    from langgraph_integration import run_langgraph_analysis, LANGGRAPH_AVAILABLE
-    from enhanced_tastytrade_api import EnhancedTastyTradeAPI
-    from enhanced_openrouter_api import EnhancedOpenRouterAPI
-    ADVANCED_FEATURES_AVAILABLE = True
-except ImportError as e:
-    st.error(f"Advanced features not available: {e}")
-    ADVANCED_FEATURES_AVAILABLE = False
-
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-# Page configuration
-st.set_page_config(
-    page_title="TastyTrade Advanced Options Validator",
-    page_icon="🚀",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
-
-# Enhanced CSS
-st.markdown("""
-<style>
-    .main-header {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        padding: 2rem;
-        border-radius: 15px;
-        margin-bottom: 2rem;
-        color: white;
-        text-align: center;
-        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-    }
-    .metric-card {
-        background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
-        padding: 1.5rem;
-        border-radius: 10px;
-        margin: 0.5rem 0;
-        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-    }
-    .advanced-metric {
-        background: linear-gradient(135deg, #a8edea 0%, #fed6e3 100%);
-        padding: 1rem;
-        border-radius: 8px;
-        margin: 0.3rem 0;
-        border-left: 4px solid #667eea;
-    }
-    .kelly-score {
-        font-size: 1.8rem;
-        font-weight: bold;
-        color: #667eea;
-    }
-    .risk-high { color: #e74c3c; font-weight: bold; }
-    .risk-medium { color: #f39c12; font-weight: bold; }
-    .risk-low { color: #27ae60; font-weight: bold; }
-    .z-score-positive { color: #27ae60; }
-    .z-score-negative { color: #e74c3c; }
-    .confidence-indicator {
-        display: inline-block;
-        padding: 0.2rem 0.8rem;
-        border-radius: 20px;
-        font-weight: bold;
-        color: white;
-    }
-    .conf-high { background-color: #27ae60; }
-    .conf-medium { background-color: #f39c12; }
-    .conf-low { background-color: #e74c
+    main()
