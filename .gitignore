@@ -1,0 +1,6 @@
+# Prevent credentials from being committed
+.streamlit/secrets.toml
+.env
+__pycache__/
+*.pyc
+*.log
