@@ -673,7 +673,7 @@ def show_advanced_validation_tab():
         show_langgraph_results(st.session_state.langgraph_results)
 
 def run_enhanced_analysis(spread_data):
-    """Run enhanced analysis with API integration"""
+    """Run enhanced analysis with API integration including LangGraph debug"""
     
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
@@ -681,14 +681,91 @@ def run_enhanced_analysis(spread_data):
     try:
         # Get historical data
         if spread_data.get('use_live_data') and st.session_state.get('apis', {}).get('tastytrade'):
-            # Use live TastyTrade data
-            # Note: You might need to implement get_historical_data method in TastyTradeClient
-            historical_data = None  # Placeholder
+            historical_data = None
         else:
-            # Use mock or alternative data source
             historical_data = loop.run_until_complete(
                 get_historical_data(spread_data['symbol'], None)
             )
+        
+        # Run comprehensive analysis
+        analysis_results = loop.run_until_complete(
+            st.session_state.advanced_analyzer.comprehensive_analysis(
+                spread_data, historical_data
+            )
+        )
+        
+        # ===== DEBUG CODE START =====
+        # Log analysis completion
+        logger.info(f"Analysis completed. Results type: {type(analysis_results)}")
+        logger.info(f"Analysis results attributes: {dir(analysis_results)}")
+        
+        # Check if LangGraph is available
+        try:
+            from langgraph_integration import LANGGRAPH_AVAILABLE
+            logger.info(f"LangGraph available: {LANGGRAPH_AVAILABLE}")
+        except ImportError:
+            logger.info("LangGraph integration not imported")
+            LANGGRAPH_AVAILABLE = False
+        
+        # Store any AI/LangGraph results in session state for debugging
+        if hasattr(analysis_results, 'ai_analysis'):
+            logger.info("AI analysis found in results")
+            st.session_state.langgraph_results = analysis_results.ai_analysis
+        elif hasattr(analysis_results, 'langgraph_analysis'):
+            logger.info("LangGraph analysis found in results")
+            st.session_state.langgraph_results = analysis_results.langgraph_analysis
+        else:
+            logger.info("No AI/LangGraph analysis found in results")
+            # Store the entire results for debugging
+          
+           st.session_state.debug_analysis_results = {
+    
+        # Get historical data
+        if spread_data.get('use_live_data') and st.session_state.get('apis', {}).get('tastytrade'):
+            # Use live TastyTrade data
+            # Note: You might need to implement get_historical_data method in TastyTradeClient
+            historical_data = None  # Placeholder
+            )
+       # ===== DEBUG CODE END =====
+        
+        st.session_state.analysis_results = analysis_results
+        
+        # AI Analysis Section with LangGraph
+        if 'apis' in st.session_state and st.session_state.apis.get('anthropic'):
+            with st.spinner("🤖 Running AI Analysis with LangGraph..."):
+                try:
+                    # Get market context
+                    market_context = {
+                        'vix': 16.5,  # Would normally fetch real VIX
+                        'volume_ratio': 1.2,
+                        'trend': 'neutral'
+                    }
+                    
+                    # Run LangGraph analysis
+                    langgraph_results = loop.run_until_complete(
+                        run_langgraph_analysis(
+                            spread_data,
+                            st.session_state.apis['anthropic'].api_key,
+                            market_context
+                        )
+                    )
+                    
+                    # Store results for debugging
+                    st.session_state.langgraph_analysis = langgraph_results
+                    logger.info(f"LangGraph analysis completed: {langgraph_results.get('langgraph_enabled', False)}")
+                    
+                except Exception as e:
+                    logger.error(f"LangGraph analysis error: {e}")
+                    st.error(f"AI Analysis error: {str(e)}")
+        
+        return analysis_results
+        
+    except Exception as e:
+        logger.error(f"Enhanced analysis error: {e}")
+        st.error(f"Analysis error: {str(e)}")
+        return None
+    finally:
+        loop.close()
         
         # Run comprehensive analysis
         advanced_results = loop.run_until_complete(
