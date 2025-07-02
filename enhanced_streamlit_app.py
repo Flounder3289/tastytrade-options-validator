@@ -125,7 +125,11 @@ def get_api_credentials():
         credentials['anthropic']['api_key'] = st.secrets.get("anthropic", {}).get("api_key")
     except:
         pass
-    
+    # Initialize Anthropic API
+anthropic_key = credentials['anthropic']['api_key']
+if anthropic_key:
+    apis['anthropic'] = {'api_key': anthropic_key}
+    logger.info("Anthropic API key available")
     # Fallback to environment variables
     credentials['tastytrade']['username'] = credentials['tastytrade']['username'] or os.getenv("TASTYTRADE_USERNAME")
     credentials['tastytrade']['password'] = credentials['tastytrade']['password'] or os.getenv("TASTYTRADE_PASSWORD")
@@ -671,6 +675,14 @@ def show_advanced_validation_tab():
     # LangGraph results
     if st.session_state.langgraph_results:
         show_langgraph_results(st.session_state.langgraph_results)
+       # LangGraph results
+    if st.session_state.langgraph_results:
+        show_langgraph_results(st.session_state.langgraph_results)
+        
+    # Add debug display
+    st.markdown("---")
+    st.subheader("🔍 Debug Information")
+    display_langgraph_debug()
 
 # REPLACE the entire run_enhanced_analysis function (lines 675-761) with this:
 
@@ -758,43 +770,9 @@ def run_enhanced_analysis(spread_data):
                     logger.info(f"LangGraph analysis completed: {langgraph_results.get('langgraph_enabled', False)}")
             else:
                 st.warning("Anthropic API key required for LangGraph analysis")
-        
-        return analysis_results
-        
-    except Exception as e:
-        logger.error(f"Enhanced analysis error: {e}")
-        st.error(f"Analysis error: {str(e)}")
-        return None
-    finally:
+        finally:
         loop.close()
-
-# ADD this new function after run_enhanced_analysis:
-
-def display_langgraph_debug():
-    """Display LangGraph debug information"""
-    
-    # Debug expander for raw LangGraph output
-    if 'langgraph_results' in st.session_state:
-        with st.expander("🔍 Debug: Raw LangGraph Output", expanded=False):
-            st.json(st.session_state.langgraph_results)
-    
-    # Debug expander for analysis results structure
-    if 'debug_analysis_results' in st.session_state:
-        with st.expander("🔍 Debug: Analysis Results Structure", expanded=False):
-            st.json(st.session_state.debug_analysis_results)
-    
-    # Debug expander for LangGraph analysis if available
-    if 'langgraph_analysis' in st.session_state:
-        with st.expander("🤖 AI/LangGraph Analysis Results", expanded=True):
-            langgraph_data = st.session_state.langgraph_analysis
-            
-            if langgraph_data.get('langgraph_enabled'):
-                st.success("✅ LangGraph Analysis Completed")
-                
-                # Display analysis sections
-                if 'analysis_results' in langgraph_data:
-                    results = langgraph_data['analysis_results']
-                    
+       
                     # Market Analysis
                     if 'market_analysis' in results:
                         st.subheader("📊 Market Analysis")
