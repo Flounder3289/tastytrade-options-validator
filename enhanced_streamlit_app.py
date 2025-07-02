@@ -246,7 +246,7 @@ def setup_api_sidebar():
     ])
     
     openrouter_configured = bool(credentials['openrouter']['api_key'])
-    
+
     # Status indicators
     st.sidebar.subheader("📊 API Status")
     
