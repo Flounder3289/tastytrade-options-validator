@@ -672,6 +672,8 @@ def show_advanced_validation_tab():
     if st.session_state.langgraph_results:
         show_langgraph_results(st.session_state.langgraph_results)
 
+# REPLACE the entire run_enhanced_analysis function (lines 675-761) with this:
+
 def run_enhanced_analysis(spread_data):
     """Run enhanced analysis with API integration including LangGraph debug"""
     
@@ -717,48 +719,141 @@ def run_enhanced_analysis(spread_data):
         else:
             logger.info("No AI/LangGraph analysis found in results")
             # Store the entire results for debugging
-          
-           st.session_state.debug_analysis_results = {
-    
-        # Get historical data
-        if spread_data.get('use_live_data') and st.session_state.get('apis', {}).get('tastytrade'):
-            # Use live TastyTrade data
-            # Note: You might need to implement get_historical_data method in TastyTradeClient
-            historical_data = None  # Placeholder
-            )
-       # ===== DEBUG CODE END =====
+            st.session_state.debug_analysis_results = {
+                'type': str(type(analysis_results)),
+                'attributes': [attr for attr in dir(analysis_results) if not attr.startswith('_')],
+                'has_ai': hasattr(analysis_results, 'ai_analysis'),
+                'has_langgraph': hasattr(analysis_results, 'langgraph_analysis')
+            }
+        # ===== DEBUG CODE END =====
         
         st.session_state.analysis_results = analysis_results
         
-        # AI Analysis Section with LangGraph
-        if 'apis' in st.session_state and st.session_state.apis.get('anthropic'):
-            with st.spinner("🤖 Running AI Analysis with LangGraph..."):
-                try:
-                    # Get market context
+        # AI Analysis with OpenRouter
+        if spread_data.get('enable_ai_analysis') and st.session_state.get('apis', {}).get('openrouter'):
+            with st.spinner("🤖 Running AI analysis..."):
+                ai_analysis = call_openrouter_api(spread_data, st.session_state.apis['openrouter']['api_key'])
+                st.session_state.ai_analysis = ai_analysis
+        
+        # LangGraph analysis with Anthropic
+        if spread_data.get('enable_langgraph', False) and LANGGRAPH_AVAILABLE:
+            anthropic_key = st.session_state.credentials['anthropic']['api_key']
+            if anthropic_key:
+                with st.spinner("🧠 Running LangGraph AI workflow..."):
                     market_context = {
                         'vix': 16.5,  # Would normally fetch real VIX
                         'volume_ratio': 1.2,
                         'trend': 'neutral'
                     }
                     
-                    # Run LangGraph analysis
                     langgraph_results = loop.run_until_complete(
                         run_langgraph_analysis(
                             spread_data,
-                            st.session_state.apis['anthropic'].api_key,
+                            anthropic_key,
                             market_context
                         )
                     )
                     
-                    # Store results for debugging
                     st.session_state.langgraph_analysis = langgraph_results
                     logger.info(f"LangGraph analysis completed: {langgraph_results.get('langgraph_enabled', False)}")
-                    
-                except Exception as e:
-                    logger.error(f"LangGraph analysis error: {e}")
-                    st.error(f"AI Analysis error: {str(e)}")
+            else:
+                st.warning("Anthropic API key required for LangGraph analysis")
         
         return analysis_results
+        
+    except Exception as e:
+        logger.error(f"Enhanced analysis error: {e}")
+        st.error(f"Analysis error: {str(e)}")
+        return None
+    finally:
+        loop.close()
+
+# ADD this new function after run_enhanced_analysis:
+
+def display_langgraph_debug():
+    """Display LangGraph debug information"""
+    
+    # Debug expander for raw LangGraph output
+    if 'langgraph_results' in st.session_state:
+        with st.expander("🔍 Debug: Raw LangGraph Output", expanded=False):
+            st.json(st.session_state.langgraph_results)
+    
+    # Debug expander for analysis results structure
+    if 'debug_analysis_results' in st.session_state:
+        with st.expander("🔍 Debug: Analysis Results Structure", expanded=False):
+            st.json(st.session_state.debug_analysis_results)
+    
+    # Debug expander for LangGraph analysis if available
+    if 'langgraph_analysis' in st.session_state:
+        with st.expander("🤖 AI/LangGraph Analysis Results", expanded=True):
+            langgraph_data = st.session_state.langgraph_analysis
+            
+            if langgraph_data.get('langgraph_enabled'):
+                st.success("✅ LangGraph Analysis Completed")
+                
+                # Display analysis sections
+                if 'analysis_results' in langgraph_data:
+                    results = langgraph_data['analysis_results']
+                    
+                    # Market Analysis
+                    if 'market_analysis' in results:
+                        st.subheader("📊 Market Analysis")
+                        market = results['market_analysis']
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.write(f"**Volatility Environment:** {market.get('volatility_environment', 'Unknown')}")
+                            st.write(f"**Timing Analysis:** {market.get('timing_analysis', 'Unknown')}")
+                        with col2:
+                            st.write(f"**Sector Factors:** {market.get('sector_factors', 'Unknown')}")
+                            if 'risk_factors' in market:
+                                st.write("**Risk Factors:**")
+                                for risk in market['risk_factors']:
+                                    st.write(f"• {risk}")
+                    
+                    # Risk Assessment
+                    if 'risk_assessment' in results:
+                        st.subheader("⚠️ Risk Assessment")
+                        risk = results['risk_assessment']
+                        st.write(f"**Risk Level:** {risk.get('risk_level', 'Unknown')}")
+                        st.write(f"**Position Sizing:** {risk.get('position_sizing', 'Unknown')}")
+                        st.write(f"**Exit Strategy:** {risk.get('exit_strategy', 'Unknown')}")
+                    
+                    # Final Recommendation
+                    if 'final_recommendation' in results:
+                        st.subheader("✅ AI Recommendation")
+                        rec = results['final_recommendation']
+                        
+                        # Color code the recommendation
+                        rec_color = {
+                            'STRONG_BUY': 'green',
+                            'BUY': 'blue',
+                            'HOLD': 'orange',
+                            'AVOID': 'red'
+                        }.get(rec.get('overall_recommendation', 'HOLD'), 'gray')
+                        
+                        st.markdown(f"<h3 style='color: {rec_color};'>{rec.get('overall_recommendation', 'UNKNOWN')}</h3>", 
+                                  unsafe_allow_html=True)
+                        
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.metric("Confidence Level", f"{rec.get('confidence_level', 0)}/10")
+                        with col2:
+                            st.metric("Composite Score", f"{rec.get('composite_score', 0)}/10")
+                        
+                        if 'reasoning' in rec:
+                            st.write("**Key Reasoning:**")
+                            for reason in rec['reasoning']:
+                                st.write(f"• {reason}")
+            else:
+                st.warning("⚠️ LangGraph not enabled - showing basic analysis")
+                st.json(langgraph_data)
+
+# ALSO, in show_advanced_validation_tab function, after line 672 (after showing langgraph results), ADD:
+
+        # Add debug display
+        st.markdown("---")
+        st.subheader("🔍 Debug Information")
+        display_langgraph_debug()
         
     except Exception as e:
         logger.error(f"Enhanced analysis error: {e}")
